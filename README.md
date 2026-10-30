@@ -64,9 +64,19 @@ end only, so a wildcard before `/security` would also match
 `/features/security`, the redirect's own target, and loop.
 
 As in Plone, a redirect applies only where the build rendered nothing: a real
-page at the old path wins. A redirect page is written there too, so the old
-path still works on a host without edge rules and between the old rules being
-removed and the new ones added.
+page at the old path wins. So the site's own build must not write redirect
+pages of its own (a Nuxt `routeRules` redirect, with no host preset to turn it
+into a real redirect, is written as a meta-refresh page): one is taken for
+content, its edge rule is not made, and the live check fails the build. A
+redirect page is written at the old path here instead, so it still works on a
+host without edge rules and between the old rules being removed and the new
+ones added.
+
+Bunny's URL trigger ignores the query string. A redirect from a path with a
+query (`/case-studies?facet.Subject=crm`) gets a rule of its own that needs
+both the path and a Query String trigger; without the query the path is a
+page, not a redirect. No redirect page can be written for it, since a static
+file cannot be keyed on a query.
 
 Bunny allows 50 edge rules per pull zone, 5 triggers per rule and 5 patterns
 per trigger. Paths that share a target share a rule, and a set that would not
