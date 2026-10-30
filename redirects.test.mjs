@@ -130,3 +130,59 @@ test('the rules this builder owns are recognised, and no others', () => {
   assert.equal(isOwnedRule({ Description: 'Force SSL' }), false);
   assert.equal(isOwnedRule({ Description: null }), false);
 });
+
+// --- pages a framework writes for its own redirects ------------------------
+
+test('a redirect stub the framework wrote is not a rendered page', () => {
+  // Nuxt writes a meta-refresh stub at every old path its routeRules redirect.
+  // That is a redirect, not content, so the edge rule must still be made: a
+  // stub answers 200, where the redirect should answer 302.
+  const { out, file } = setup({ '/about/about-us': '/about', '/team': '/about' });
+  mkdirSync(join(out, 'about/about-us'), { recursive: true });
+  writeFileSync(join(out, 'about/about-us/index.html'),
+    '<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0; url=/about"></head></html>');
+  mkdirSync(join(out, 'team'));
+  writeFileSync(join(out, 'team/index.html'), '<!DOCTYPE html><html><body>A real team page</body></html>');
+  assert.deepEqual(movedPaths(out, readRedirects(file)), [['/about/about-us', '/about']]);
+});
+
+// --- query strings ------------------------------------------------------------
+
+test('a redirect from a query string is always moved, and gets no page', () => {
+  // A static file cannot be keyed on a query string, so there is never a
+  // rendered page to win, and no redirect page can be written for it.
+  const { out, file } = setup({ '/case-studies?facet.Subject=crm': '/case-studies?facet.Subject=custom-apps' });
+  mkdirSync(join(out, 'case-studies'));
+  writeFileSync(join(out, 'case-studies/index.html'), 'the listing');
+  const moved = movedPaths(out, readRedirects(file));
+  assert.deepEqual(moved, [['/case-studies?facet.Subject=crm', '/case-studies?facet.Subject=custom-apps']]);
+  writeRedirectPages(out, moved);
+  assert.equal(readFileSync(join(out, 'case-studies/index.html'), 'utf8'), 'the listing');
+  assert.equal(existsSync(join(out, 'case-studies?facet.Subject=crm')), false);
+});
+
+test('a query redirect needs both its path and its query', () => {
+  // Bunny's URL trigger ignores the query string, so the query is a trigger of
+  // its own, and both must match: the bare path is the listing, not a redirect.
+  const rules = planRedirectRules(
+    [['/case-studies?facet.Subject=crm', '/case-studies?facet.Subject=custom-apps'], ['/old', '/new']],
+    site,
+  );
+  const query = rules.find((r) => r.Triggers.some((t) => t.Type === 6));
+  assert.equal(query.TriggerMatchingType, 1, 'all triggers must match');
+  assert.equal(query.ActionParameter1, 'https://example.org/case-studies?facet.Subject=custom-apps');
+  assert.equal(query.ActionParameter2, '302');
+  const url = query.Triggers.find((t) => t.Type === 0);
+  assert.deepEqual(url.PatternMatches.sort(), [
+    'https://example.b-cdn.net/case-studies',
+    'https://example.b-cdn.net/case-studies/',
+    'https://example.org/case-studies',
+    'https://example.org/case-studies/',
+  ]);
+  const qs = query.Triggers.find((t) => t.Type === 6);
+  assert.deepEqual(qs.PatternMatches, ['?facet.Subject=crm']);
+  // The plain redirect is unaffected, and never shares a rule with the query one.
+  const plain = rules.find((r) => r !== query);
+  assert.equal(plain.TriggerMatchingType, 0);
+  assert.ok(plain.Triggers.every((t) => t.Type === 0));
+});

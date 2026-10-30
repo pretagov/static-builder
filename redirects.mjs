@@ -63,15 +63,30 @@ export function readRedirects(redirectsFile) {
 
 const pageFor = (publicDir, path) => join(publicDir, path.replace(/^\/+|\/+$/g, ''), 'index.html');
 
+const hasQuery = (path) => path.includes('?');
+
+// An immediate meta refresh: a page that only sends the visitor on. Frameworks
+// write these for their own redirects (Nuxt does, for every routeRules
+// redirect), and a page of content never refreshes at once.
+const STUB = /<meta\s+http-equiv=["']?refresh["']?\s+content=["']?0\s*[;"']/i;
+
+/** True when the build rendered real content at `path`, not a redirect stub. */
+function rendered(publicDir, path) {
+  const page = pageFor(publicDir, path);
+  return existsSync(page) && !STUB.test(readFileSync(page, 'utf8'));
+}
+
 /**
  * The redirects that apply: those whose old path the build did not render.
  * Decided once, before any redirect page is written, so a redirect page is
- * never mistaken for a rendered one.
+ * never mistaken for a rendered one. A redirect stub is not a rendered page.
+ * A path with a query string always applies: a static file cannot be keyed on
+ * a query, so nothing the build wrote can be at it.
  *
  * @returns {[string, string][]}
  */
 export function movedPaths(publicDir, map) {
-  return Object.entries(map).filter(([from]) => !existsSync(pageFor(publicDir, from)));
+  return Object.entries(map).filter(([from]) => hasQuery(from) || !rendered(publicDir, from));
 }
 
 function escapeAttr(s) {
@@ -98,6 +113,8 @@ function redirectPage(to) {
 
 export function writeRedirectPages(publicDir, moved) {
   for (const [from, to] of moved) {
+    // A query string cannot name a file; the edge rule alone answers for it.
+    if (hasQuery(from)) continue;
     const page = pageFor(publicDir, from);
     mkdirSync(join(page, '..'), { recursive: true });
     writeFileSync(page, redirectPage(to));
@@ -110,6 +127,13 @@ const chunk = (items, size) => {
   return out;
 };
 
+const URL_TRIGGER = 0;
+const QUERY_TRIGGER = 6;
+
+function trigger(type, matches) {
+  return { Type: type, PatternMatchingType: 0 /* any pattern */, PatternMatches: matches, Parameter1: null };
+}
+
 function rule({ description, target, status, patterns }) {
   return {
     ActionType: 1, // Redirect
@@ -118,12 +142,28 @@ function rule({ description, target, status, patterns }) {
     Enabled: true,
     Description: description,
     TriggerMatchingType: 0, // any trigger
-    Triggers: chunk(patterns, PATTERNS_PER_TRIGGER).map((matches) => ({
-      Type: 0, // URL
-      PatternMatchingType: 0, // any pattern
-      PatternMatches: matches,
-      Parameter1: null,
-    })),
+    Triggers: chunk(patterns, PATTERNS_PER_TRIGGER).map((matches) => trigger(URL_TRIGGER, matches)),
+  };
+}
+
+const pathPatterns = (path, hosts) =>
+  hosts.flatMap((host) => [`https://${host}${path}`, `https://${host}${path.replace(/\/+$/, '')}/`]);
+
+/**
+ * One rule for a redirect from a path with a query string. Bunny's URL trigger
+ * ignores the query, so the query is a trigger of its own and the rule needs
+ * both: without the query the path is a page (a listing, say), not a redirect.
+ */
+function queryRule(from, to, { origin, hosts }) {
+  const [path, query] = from.split(/\?(.*)/s);
+  const patterns = pathPatterns(path, hosts);
+  if (patterns.length > PATTERNS_PER_TRIGGER) {
+    throw new Error(`planRedirectRules: ${from} needs ${patterns.length} path patterns in one trigger, over Bunny's ${PATTERNS_PER_TRIGGER}`);
+  }
+  return {
+    ...rule({ description: `${MOVED_PREFIX}${from} -> ${to}`.slice(0, 255), target: `${origin}${to}`, status: REDIRECT_STATUS, patterns: [] }),
+    TriggerMatchingType: 1, // every trigger
+    Triggers: [trigger(URL_TRIGGER, patterns), trigger(QUERY_TRIGGER, [`?${query}`])],
   };
 }
 
@@ -134,17 +174,18 @@ function rule({ description, target, status, patterns }) {
  * Each old path is matched with and without a trailing slash on each of the
  * site's own hosts. Never a leading wildcard: Bunny anchors a pattern at the
  * end only, so a wildcard followed by `/security` would also match
- * `/features/security`, the very target, and loop. A query string is not
- * matched, for the same reason (`?` in a pattern is one character, not a
- * query).
+ * `/features/security`, the very target, and loop. A path with a query string
+ * gets a rule of its own (see queryRule).
  *
  * @param {[string, string][]} moved
  * @param {{ origin: string, hosts: string[] }} site
  */
 export function planRedirectRules(moved, { origin, hosts }) {
   if (!hosts.length) throw new Error('planRedirectRules: no hosts to match on');
+  const rules = moved.filter(([from]) => hasQuery(from)).map(([from, to]) => queryRule(from, to, { origin, hosts }));
   const byTarget = new Map();
   for (const [from, to] of moved) {
+    if (hasQuery(from)) continue;
     if (!byTarget.has(to)) byTarget.set(to, []);
     byTarget.get(to).push(from);
   }
@@ -153,12 +194,9 @@ export function planRedirectRules(moved, { origin, hosts }) {
     throw new Error(`planRedirectRules: ${hosts.length} hosts need ${perSource} patterns per path, over Bunny's ${PATTERNS_PER_RULE} per rule`);
   }
   const sourcesPerRule = Math.floor(PATTERNS_PER_RULE / perSource);
-  const rules = [];
   for (const [to, froms] of byTarget) {
     for (const batch of chunk(froms, sourcesPerRule)) {
-      const patterns = batch.flatMap((from) =>
-        hosts.flatMap((host) => [`https://${host}${from}`, `https://${host}${from.replace(/\/+$/, '')}/`]),
-      );
+      const patterns = batch.flatMap((from) => pathPatterns(from, hosts));
       rules.push(rule({
         description: `${MOVED_PREFIX}${batch.join(', ')} -> ${to}`.slice(0, 255),
         target: `${origin}${to}`,
