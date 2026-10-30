@@ -65,28 +65,21 @@ const pageFor = (publicDir, path) => join(publicDir, path.replace(/^\/+|\/+$/g, 
 
 const hasQuery = (path) => path.includes('?');
 
-// An immediate meta refresh: a page that only sends the visitor on. Frameworks
-// write these for their own redirects (Nuxt does, for every routeRules
-// redirect), and a page of content never refreshes at once.
-const STUB = /<meta\s+http-equiv=["']?refresh["']?\s+content=["']?0\s*[;"']/i;
-
-/** True when the build rendered real content at `path`, not a redirect stub. */
-function rendered(publicDir, path) {
-  const page = pageFor(publicDir, path);
-  return existsSync(page) && !STUB.test(readFileSync(page, 'utf8'));
-}
-
 /**
  * The redirects that apply: those whose old path the build did not render.
  * Decided once, before any redirect page is written, so a redirect page is
- * never mistaken for a rendered one. A redirect stub is not a rendered page.
- * A path with a query string always applies: a static file cannot be keyed on
- * a query, so nothing the build wrote can be at it.
+ * never mistaken for a rendered one. A path with a query string always
+ * applies: a static file cannot be keyed on a query, so nothing the build
+ * wrote can be at it.
+ *
+ * The site's own build should not write redirect pages for these paths (a
+ * framework's redirect routes, say): that is this module's job, and a page at
+ * the old path is taken for content, so its edge rule is not made.
  *
  * @returns {[string, string][]}
  */
 export function movedPaths(publicDir, map) {
-  return Object.entries(map).filter(([from]) => hasQuery(from) || !rendered(publicDir, from));
+  return Object.entries(map).filter(([from]) => hasQuery(from) || !existsSync(pageFor(publicDir, from)));
 }
 
 function escapeAttr(s) {

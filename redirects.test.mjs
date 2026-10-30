@@ -131,21 +131,6 @@ test('the rules this builder owns are recognised, and no others', () => {
   assert.equal(isOwnedRule({ Description: null }), false);
 });
 
-// --- pages a framework writes for its own redirects ------------------------
-
-test('a redirect stub the framework wrote is not a rendered page', () => {
-  // Nuxt writes a meta-refresh stub at every old path its routeRules redirect.
-  // That is a redirect, not content, so the edge rule must still be made: a
-  // stub answers 200, where the redirect should answer 302.
-  const { out, file } = setup({ '/about/about-us': '/about', '/team': '/about' });
-  mkdirSync(join(out, 'about/about-us'), { recursive: true });
-  writeFileSync(join(out, 'about/about-us/index.html'),
-    '<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0; url=/about"></head></html>');
-  mkdirSync(join(out, 'team'));
-  writeFileSync(join(out, 'team/index.html'), '<!DOCTYPE html><html><body>A real team page</body></html>');
-  assert.deepEqual(movedPaths(out, readRedirects(file)), [['/about/about-us', '/about']]);
-});
-
 // --- query strings ------------------------------------------------------------
 
 test('a redirect from a query string is always moved, and gets no page', () => {
